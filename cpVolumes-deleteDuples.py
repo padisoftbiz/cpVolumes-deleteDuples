@@ -134,8 +134,8 @@ def log_actions(log_path):
     delete script, and skip list. Copy files, generate delete script, and log actions.
 """
 def main():
-    src = "/Volumes/My Passport"
-    dst = "/Volumes/NO NAME"
+    src = ""
+    dst = ""
     log_path = "file_transfer_log.txt"
     delete_script_path = "delete_duplicates.sh"
     skip_list_path = "skip_list.txt"
