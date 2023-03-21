@@ -17,6 +17,8 @@ Usage:
     Run the script to copy files, generate the delete script, and log actions.
 """
 
+import fnmatch
+import json
 import os
 import shutil
 import hashlib
@@ -31,11 +33,11 @@ from pathlib import Path
         str: The SHA-256 hash of the file.
 """
 def hash_file(file_path):
+    hasher = hashlib.sha256()
     with open(file_path, "rb") as file:
-        file_hash = hashlib.sha256()
-        while chunk := file.read(8192):
-            file_hash.update(chunk)
-    return file_hash.hexdigest()
+        for chunk in iter(lambda: file.read(4096), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 """
@@ -62,38 +64,46 @@ def read_skip_list(skip_list_path):
         log_path (str): Path to the log file.
         skip_list (set): A set of file paths to be skipped.
 """
-def copy_files(src, dst, log_path, skip_list):
-    file_hashes = set()
-    src = os.path.abspath(src)
-    dst = os.path.abspath(dst)
-    with open(log_path, "w") as log_file:
+def copy_files(src, dst, log_path, skip_list_path):
+    # Load skip list
+    with open(skip_list_path, "r") as f:
+        skip_list = f.read().splitlines()
+
+    # Check for progress file and load it
+    progress_file = "progress.json"
+    progress = {}
+    if os.path.exists(progress_file):
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+
+    # Open the log file for appending
+    with open(log_path, "a") as log:
         for root, _, files in os.walk(src):
             for file in files:
                 source_file = os.path.join(root, file)
-                rel_path = os.path.relpath(root, src)
-                target_dir = os.path.normpath(os.path.join(dst, rel_path))
-                target_file = os.path.join(target_dir, file)
-                relative_source_file = os.path.relpath(source_file, src)
+                target_file = os.path.join(dst, os.path.relpath(source_file, src))
 
-                if file.startswith('.') or any(part.startswith('.') for part in Path(source_file).parts):
-                    log_file.write(f"SKIPPED HIDDEN: {source_file}\n")
+                # Check if the file is in the skip list
+                if any(fnmatch.fnmatch(source_file, pattern) for pattern in skip_list):
                     continue
 
-                if relative_source_file in skip_list:
-                    log_file.write(f"SKIPPED: {source_file}\n")
+                # Check if the file has been processed already
+                if source_file in progress:
                     continue
-                
+
+                # Calculate the file hash and check for duplicates
                 file_hash = hash_file(source_file)
-
-                if file_hash not in file_hashes:
-                    file_hashes.add(file_hash)
-                    if not os.path.exists(target_dir):
-                        os.makedirs(target_dir)
-                    shutil.copy(source_file, target_file)
-                    log_file.write(f"COPIED: {source_file} -> {target_file}\n")
+                if file_hash in progress.values():
+                    log.write(f"DUPLICATE: {source_file}\n")
                 else:
-                    log_file.write(f"DUPLICATE: {source_file} -> {target_file}\n")
+                    os.makedirs(os.path.dirname(target_file), exist_ok=True)
+                    shutil.copy(source_file, target_file)
+                    log.write(f"COPIED: {source_file} -> {target_file}\n")
+                    progress[source_file] = file_hash
 
+                # Save progress
+                with open(progress_file, "w") as f:
+                    json.dump(progress, f)
 
 """
     Generate a shell script to delete duplicate files in the destination directory.
@@ -131,7 +141,7 @@ def main():
     skip_list_path = "skip_list.txt"
 
     skip_list = read_skip_list(skip_list_path)
-    copy_files(src, dst, log_path, skip_list)
+    copy_files(src, dst, log_path, skip_list_path)
     delete_duplicates(dst, delete_script_path)
     log_actions(log_path)
 
