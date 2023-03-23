@@ -24,6 +24,63 @@ import shutil
 import hashlib
 import shlex
 from pathlib import Path
+import concurrent.futures
+
+
+def process_file(src, dst, log, skip_list, progress, progress_lock, root, file):
+    source_file = os.path.join(root, file)
+    target_file = os.path.join(dst, os.path.relpath(source_file, src))
+
+    # Check if the file is in the skip list
+    if any(fnmatch.fnmatch(source_file, pattern) for pattern in skip_list):
+        return
+
+    # Check if the file has been processed already
+    with progress_lock:
+        if source_file in progress:
+            return
+
+    # Calculate the file hash and check for duplicates
+    file_hash = hash_file(source_file)
+
+    with progress_lock:
+        if file_hash in progress.values():
+            log.write(f"DUPLICATE: {source_file}\n")
+        else:
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
+            shutil.copy(source_file, target_file)
+            log.write(f"COPIED: {source_file} -> {target_file}\n")
+            progress[source_file] = file_hash
+
+            # Save progress
+            with open(progress_file, "w") as f:
+                json.dump(progress, f)
+
+
+def copy_files(src, dst, log_path, skip_list_path, max_workers=10):
+    # Load skip list
+    with open(skip_list_path, "r") as f:
+        skip_list = f.read().splitlines()
+
+    # Check for progress file and load it
+    progress_file = "progress.json"
+    progress = {}
+    if os.path.exists(progress_file):
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+
+    progress_lock = concurrent.futures.thread.Lock()
+
+    # Open the log file for appending
+    with open(log_path, "a") as log:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for root, _, files in os.walk(src):
+                # Process files concurrently
+                futures = [executor.submit(process_file, src, dst, log, skip_list, progress, progress_lock, root, file)
+                           for file in files]
+                concurrent.futures.wait(futures)
+
+
 
 """
     Calculate the SHA-256 hash of a given file.
@@ -133,9 +190,10 @@ def log_actions(log_path):
     Main function to execute the script. Set the paths for source, destination, log file,
     delete script, and skip list. Copy files, generate delete script, and log actions.
 """
+
 def main():
-    src = "/Volumes/My Passport"
-    dst = "/Volumes/NO NAME"
+    src = ""
+    dst = ""
     log_path = "file_transfer_log.txt"
     delete_script_path = "delete_duplicates.sh"
     skip_list_path = "skip_list.txt"
